@@ -3,19 +3,16 @@
 
 using namespace std;
 
-struct TextHandler
+struct TextHandler : public Handler
 {
 	TextHandler(const std::string& text)
 	: text(text)
 	{	
 	}
 
-	HTTPServer::Response operator()(const HTTPServer::HTTPParams& params)
+	virtual std::string handleRequest()
 	{
-		HTTPServer::Response resp;
-		resp.body = text;
-
-		return resp;
+		return text;
 	}
 private:
 	std::string text;	
@@ -25,8 +22,11 @@ int main(int argc, char** argv)
 {
 	HTTPServer server(8080);
 
-	server.addRoute("/", HTTPServer::Handler(TextHandler("Welcome to my super server!")));
-	server.addRoute("/secret", HTTPServer::Handler(TextHandler("You found the secret page! Sssh...")));
+	boost::shared_ptr<Handler> indexHandler(new TextHandler("Welcome to my super server!"));
+	server.addRoute("/", indexHandler);
+
+	boost::shared_ptr<Handler> secretHandler(new TextHandler("You found the secret page! Sssh..."));
+	server.addRoute("/secret", secretHandler);
 
 	try
 	{

@@ -1,17 +1,24 @@
 #include "HTTPServer.h"
 #include <iostream>
 #include <boost/algorithm/string.hpp>
+#include <stdlib.h>
 
-using boost::asio::ip::tcp;
 using namespace std;
 
 HTTPServer::HTTPServer(int port)
-: acceptor(io_service, tcp::endpoint(tcp::v4(), port))
+: port(port), len_cli_addr(sizeof(cli_addr))
 {
-	
+	// Clear out the gunk memory in serv_addr
+	bzero((char*) &serv_addr, sizeof(serv_addr));
+
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = INADDR_ANY;
+	serv_addr.sin_port = htons(port);
+
+	bind();
 }
 
-void HTTPServer::addRoute(const char* url, Handler handler)
+void HTTPServer::addRoute(const char* url, boost::shared_ptr<Handler>& handler)
 {
 	handlers[url] = handler;
 }
@@ -20,20 +27,40 @@ void HTTPServer::run()
 {
 	while(true)
 	{
-		tcp::socket socket(io_service);
+		confd = accept(sockfd, (sockaddr*)&cli_addr, &len_cli_addr);
 
-		acceptor.accept(socket);
+		if(confd < 0)
+			throw runtime_error("Error accepting connection");
+		
+		int len_read = read(confd, sock_buf, BUF_SIZE);
 
-		read(socket);
+		if(len_read < 0)
+			throw runtime_error("Error reading from socket");
 
 		std::vector<std::string> lines;
 		boost::split(lines, sock_buf, boost::is_any_of("\n"));
 		
-		dispatchRequest(socket, lines);
+		dispatchRequest(confd, lines);
+
+		close(confd);
 	}
 }
 
-void HTTPServer::dispatchRequest(tcp::socket& socket, const std::vector<std::string>& lines)
+void HTTPServer::bind()
+{
+	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	if(sockfd < 0)
+		throw runtime_error("Error creating socket");
+	
+	if(::bind(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0)
+		throw runtime_error("Error binding to port");
+	
+	if(listen(sockfd, 5) < 0)
+		throw runtime_error("Error listening to port");
+}
+
+void HTTPServer::dispatchRequest(int confd, const std::vector<std::string>& lines)
 {
 	// The first line should be the HTTP request verby bit
 	// eg GET / HTTP/1.1
@@ -50,35 +77,30 @@ void HTTPServer::dispatchRequest(tcp::socket& socket, const std::vector<std::str
 		HandlerMap::iterator it_handler = handlers.find(tokens[1]);
 		if(it_handler != handlers.end())
 		{
-			write(socket, "HTTP/1.1 200 OK\n\n");
+			write(confd, "HTTP/1.1 200 OK\n\n");
 			
-			HTTPParams empty;
-			Handler& handler = it_handler->second;
+			boost::shared_ptr<Handler> handler = it_handler->second;
 
-			Response r = handler(empty);
+			std::string r = handler->handleRequest();
 
-			write(socket, r.body);
-			write(socket, "\n");
+			write(confd, r.c_str());
+			write(confd, "\n");
 		}
 		else
 		{
-			write(socket, "HTTP/1.1 404 Not Found\n\nYou done did a fall over, that page isn't here\n");
+			write(confd, "HTTP/1.1 404 Not Found\n\nYou done did a fall over, that page isn't here\n");
 		}
 	}
 	else
 	{
-		write(socket, "HTTP/1.1 405 Method Not Allowed\n\nYou done did a fall over, only GET is supported\n");
+		write(confd, "HTTP/1.1 405 Method Not Allowed\n\nYou done did a fall over, only GET is supported\n");
 	}
 }
 
-void HTTPServer::read(tcp::socket& socket)
+void HTTPServer::write(int confd, const std::string& out)
 {
-	boost::system::error_code error_code;
-	socket.read_some(boost::asio::buffer(sock_buf), error_code);
-}
+	int len_w = ::write(confd, out.c_str(), out.size());
 
-void HTTPServer::write(tcp::socket& socket, const std::string& out)
-{
-	boost::system::error_code error_code;
-	boost::asio::write(socket, boost::asio::buffer(out), error_code);
+	if(len_w < 0)
+		throw runtime_error("Error writing to socket");
 }
